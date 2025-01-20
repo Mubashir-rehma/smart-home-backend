@@ -4,8 +4,6 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "build": "netlify-lambda build functions",
-    "start": "netlify-lambda serve functions"
   },
   "keywords": [],
   "author": "",
