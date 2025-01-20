@@ -8,6 +8,6 @@
     upstream: "nodeapp:http"
 
 
-"https://{default}/":
-  type: redirect
-  to: "https://www.{default}/"
+# "https://{default}/":
+#   type: redirect
+#   to: "https://www.{default}/"
