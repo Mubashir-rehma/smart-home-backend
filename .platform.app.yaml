@@ -9,8 +9,12 @@ name: nodeapp
 # to find the supported versions for the 'nodejs' type.
 type: 'nodejs:20'
 disk: 512
-build:
-    flavor: "nodejs"
+# build:
+#     flavor: "nodejs"
 web:
     commands:
         start: "node src/server.js" # Path to your server.js
+
+dependencies:
+    nodejs:
+        version: "20"  # Match the type's Node.js version
