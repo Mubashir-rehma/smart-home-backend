@@ -15,6 +15,6 @@ web:
     commands:
         start: "node src/server.js" # Path to your server.js
 
-dependencies:
-    nodejs:
-        version: "20"  # Match the type's Node.js version
+# dependencies:
+#     nodejs:
+#         version: "20"  # Match the type's Node.js version
