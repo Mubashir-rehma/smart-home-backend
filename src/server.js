@@ -1,138 +1,147 @@
-import express from 'express'
-import cors from 'cors'
-import eWeLink from 'ewelink-api-next'
-//import Koa from 'koa'
-//import bodyParser from 'koa-bodyparser'
-//import Router from 'koa-router'
-import { client, redirectUrl, randomString } from './config.js'
-import * as fs from 'fs'
-import open from 'open';
+import express from 'express';
+import cors from 'cors';
+import { WebSocket, WebSocketServer } from 'ws';
+import request from 'request';
+import * as fs from 'fs';
+import path from 'path';
 
 const app = express();
+const PORT = process.env.PORT || 8000;
 
-// Enable CORS for all routes
+// Create WebSocket server
+const wss = new WebSocketServer({ port: 8001 });
+
+// Enable CORS and JSON parsing
 app.use(cors());
 app.use(express.json());
 
-//app.use(bodyParser())
+// Constants
+const API_REGIONS = {
+  as: 'https://as-apia.coolkit.cc',
+  cn: 'https://cn-apia.coolkit.cn',
+  eu: 'https://eu-apia.coolkit.cc',
+  us: 'https://us-apia.coolkit.cc'
+};
 
-//const router = new Router()
+// WebSocket connections store
+const wsConnections = new Map();
 
-// Store active connections (in production, use Redis or similar)
-const userConnections = new Map();
+// WebSocket server setup
+wss.on('connection', (ws, req) => {
+  const token = req.url.split('token=')[1];
+  if (token) {
+    wsConnections.set(token, ws);
+    console.log(`WebSocket client connected with token: ${token}`);
 
-// Root route for testing
+    ws.on('close', () => {
+      wsConnections.delete(token);
+      console.log(`WebSocket client disconnected: ${token}`);
+    });
+  }
+});
+
+// Broadcast device updates to connected clients
+const broadcastDeviceUpdate = (token, deviceUpdate) => {
+  const ws = wsConnections.get(token);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(deviceUpdate));
+  }
+};
+
+// API Routes
 app.get('/', (req, res) => {
   res.json({ message: 'Smart Home API Server Running' });
 });
 
-// API route for testing
-app.get('/api', (req, res) => {
-  res.json({ message: 'API endpoint working' });
-});
-
-// Login route
+// Login route with OAuth2
 app.post('/api/login', async (req, res) => {
   try {
-  console.log("login request came")
-    // Get login URL
-    const loginUrl = client.oauth.createLoginUrl({
-      redirectUrl: redirectUrl,
-      grantType: 'authorization_code',
-      state: randomString(10),
+    const tokenFilePath = path.resolve('./token.json');
+
+    if (fs.existsSync(tokenFilePath)) {
+      const tokenData = JSON.parse(fs.readFileSync(tokenFilePath, 'utf-8'));
+      if (tokenData && !isTokenExpired(tokenData)) {
+        return res.status(200).json({ token: tokenData });
+      }
+    }
+
+    // OAuth2 implementation for new login
+    const { app_id, app_secret, email, password } = req.body;
+    
+    const options = {
+      method: 'POST',
+      url: `${API_REGIONS.as}/v2/user/login`,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CK-App-Id': app_id,
+        'Authorization': `Sign ${generateAuthSign(app_secret)}`
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        countryCode: '+1' // Adjustable based on user's region
+      })
+    };
+
+    request(options, (error, response, body) => {
+      if (error) {
+        return res.status(500).json({ error: 'Login failed' });
+      }
+      
+      const loginData = JSON.parse(body);
+      fs.writeFileSync(tokenFilePath, JSON.stringify(loginData));
+      res.status(200).json(loginData);
     });
-
-    console.log('Generated login URL:', loginUrl); // Debug log
-
-    // Automatically redirect the user to the login URL
-    return res.status(200).json({ loginUrl: loginUrl });
   } catch (error) {
-    console.error('Login error:', error); // Debug log
     res.status(500).json({ error: error.message });
   }
 });
 
-// Redirect URL route
-app.get('/redirectUrl', async (req, res) => {
+// Get all devices with real-time updates
+app.get('/api/devices', async (req, res) => {
   try {
-    const { code, region } = req.query;
-
-    if (!code || !region) {
-      return res.status(400).json({ error: 'Code and region are required' });
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    console.log('Authorization Code:', code);
-    console.log('Region:', region);
+    const options = {
+      method: 'GET',
+      url: `${API_REGIONS.as}/v2/device/thing`,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    };
 
-    // Fetch token
-    const tokenResponse = await client.oauth.getToken({
-      region,
-      redirectUrl,
-      code,
+    request(options, (error, response, body) => {
+      if (error) {
+        return res.status(500).json({ error: 'Failed to fetch devices' });
+      }
+
+      const devices = JSON.parse(body).data;
+      
+      // Process and format device data
+      const formattedDevices = devices.thingList.map(device => ({
+        id: device.itemData.deviceid,
+        name: device.itemData.name,
+        status: getDeviceStatus(device.itemData.params),
+        power: {
+          daily: (device.itemData.params.dayKwh || 0) / 100,
+          monthly: (device.itemData.params.monthKwh || 0) / 100
+        },
+        online: device.itemData.online,
+        type: device.itemData.productModel
+      }));
+
+      res.status(200).json(formattedDevices);
     });
-
-    tokenResponse['region'] = region;
-
-    // Save token to file (for demonstration purposes)
-    fs.writeFileSync('./token.json', JSON.stringify(tokenResponse, null, 2));
-    console.log('Token Response:', tokenResponse);
-
-    // Return the token response
-    res.json(tokenResponse);
   } catch (error) {
-    console.error('Error fetching token:', error); // Debug log
     res.status(500).json({ error: error.message });
   }
 });
 
-
-// Get device power state
-app.get('/api/device/:deviceId/power', async (req, res) => {
-  try {
-    const { deviceId } = req.params;
-    const token = req.headers.authorization?.split(' ')[1];
-
-    if (!token) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const connection = userConnections.get(token);
-    if (!connection) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    const powerState = await connection.getDevicePowerState(deviceId);
-    res.json(powerState);
-  } catch (error) {
-    console.error('Get power state error:', error); // Debug log
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get device power usage
-app.get('/api/device/:deviceId/usage', async (req, res) => {
-  try {
-    const { deviceId } = req.params;
-    const token = req.headers.authorization?.split(' ')[1];
-
-    if (!token) {
-      return res.status(401).json({ error: 'No token provided' });
-    }
-
-    const connection = userConnections.get(token);
-    if (!connection) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    const powerUsage = await connection.getDevicePowerUsage(deviceId);
-    res.json(powerUsage);
-  } catch (error) {
-    console.error('Get power usage error:', error); // Debug log
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Toggle device
+// Toggle device state with WebSocket update
 app.post('/api/device/:deviceId/toggle', async (req, res) => {
   try {
     const { deviceId } = req.params;
@@ -140,36 +149,122 @@ app.post('/api/device/:deviceId/toggle', async (req, res) => {
     const token = req.headers.authorization?.split(' ')[1];
 
     if (!token) {
-      return res.status(401).json({ error: 'No token provided' });
+      return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    const connection = userConnections.get(token);
-    if (!connection) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
+    console.log(deviceId, state)
 
-    const result = await connection.toggleDevice(deviceId, state);
-    res.json(result);
+    const options = {
+      method: 'POST',
+      url: `${API_REGIONS.as}/v2/device/thing/status`,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        type: 1,
+        id: deviceId,
+        params: {
+          switch: state
+        }
+      })
+    };
+
+    request(options, (error, response, body) => {
+      if (error) {
+        return res.status(500).json({ error: 'Failed to toggle device' });
+      }
+
+      const result = JSON.parse(body);
+
+      console.log(result)
+      
+      // Broadcast device state change to WebSocket clients
+      broadcastDeviceUpdate(token, {
+        type: 'deviceUpdate',
+        deviceId,
+        state
+      });
+
+      res.status(200).json(result);
+    });
   } catch (error) {
-    console.error('Toggle device error:', error); // Debug log
     res.status(500).json({ error: error.message });
   }
 });
 
-// Error handling middleware
+// Get device power consumption statistics
+app.get('/api/device/:deviceId/power-stats', async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const token = req.headers.authorization?.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const options = {
+      method: 'GET',
+      url: `${API_REGIONS.as}/v2/device/thing/stats`,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      qs: {
+        deviceid: deviceId,
+        type: 'power'
+      }
+    };
+
+    request(options, (error, response, body) => {
+      if (error) {
+        return res.status(500).json({ error: 'Failed to fetch power statistics' });
+      }
+
+      const stats = JSON.parse(body);
+      res.status(200).json(stats);
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper Functions
+const getDeviceStatus = (params) => {
+  if (params.switch) {
+    return params.switch;
+  }
+  if (Array.isArray(params.switches) && params.switches.length > 0) {
+    return params.switches[0].switch;
+  }
+  return 'unknown';
+};
+
+const isTokenExpired = (tokenData) => {
+  const expirationTime = tokenData.data?.at;
+  if (!expirationTime) return true;
+  return Date.now() > expirationTime * 1000;
+};
+
+const generateAuthSign = (appSecret) => {
+  // Implement your authentication signature generation logic here
+  // This should match eWeLink's requirements for API authentication
+  return appSecret; // Placeholder - implement actual signing logic
+};
+
+// Error Handling
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-const PORT = process.env.PORT || 3000;
+// Start Server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Test the server at: http://localhost:${PORT}`);
+  console.log(`HTTP Server running on port ${PORT}`);
+  console.log(`WebSocket Server running on port 8001`);
   console.log(`API endpoint at: http://localhost:${PORT}/api`);
 });
