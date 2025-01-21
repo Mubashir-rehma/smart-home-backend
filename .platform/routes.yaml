@@ -5,7 +5,9 @@
 # .platform/routes.yaml
 "https://{default}/":
     type: upstream
-    upstream: "nodeapp:http"
+    upstream: "nodeapp:http"  # This must match the name in platform.app.yaml
+    cache:
+        enabled: false
 
 
 # "https://{default}/":
