@@ -14,3 +14,8 @@ build:
 web:
     commands:
         start: "node src/server.js" # Path to your server.js
+
+        
+mounts:
+    "/.platform.app.yaml": "ignore"
+    "/.platform": "ignore"
