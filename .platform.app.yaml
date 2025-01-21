@@ -18,3 +18,8 @@ web:
 # dependencies:
 #     nodejs:
 #         version: "20"  # Match the type's Node.js version
+
+
+mounts:
+    "/.platform.app.yaml": "ignore"
+    "/.platform": "ignore"

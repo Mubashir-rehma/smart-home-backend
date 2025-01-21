@@ -268,3 +268,9 @@ app.listen(PORT, () => {
   console.log(`WebSocket Server running on port 8001`);
   console.log(`API endpoint at: http://localhost:${PORT}/api`);
 });
+
+
+app.use('/api', (req, res, next) => {
+  console.log(`Incoming API request: ${req.method} ${req.url}`);
+  next();
+});

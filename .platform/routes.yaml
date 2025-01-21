@@ -3,13 +3,25 @@
 #   type: upstream
 #   upstream: "app:http"
 # .platform/routes.yaml
-"https://{default}/":
-    type: upstream
-    upstream: "nodeapp:http"  # This must match the name in platform.app.yaml
-    cache:
-        enabled: false
+# "https://{default}/":
+#     type: upstream
+#     upstream: "nodeapp:http"  # This must match the name in platform.app.yaml
+#     cache:
+#         enabled: false
 
 
 # "https://{default}/":
 #   type: redirect
 #   to: "https://www.{default}/"
+
+"https://{default}/":
+    type: upstream
+    upstream: "nodeapp:http"  # This must match the name in `platform.app.yaml`
+    cache:
+        enabled: false
+
+"https://{default}/api":
+    type: upstream
+    upstream: "nodeapp:http"  # Routes to your Node.js app
+    cache:
+        enabled: false
