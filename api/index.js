@@ -1,13 +1,17 @@
 import express from 'express'
 import cors from 'cors'
-import eWeLink from 'ewelink-api-next'
 import { client, redirectUrl, randomString } from './config.js'
 import * as fs from 'fs'
-import open from 'open';
 import path from 'path';
 import request from 'request'
+import WebSocket, { WebSocketServer } from 'ws';
 
 const app = express();
+const wss = new WebSocketServer({ noServer: true });
+const PORT = process.env.PORT || 3500;
+
+// Map to store WebSocket connections
+const wsConnections = new Map();
 
 // Enable CORS for all routes
 app.use(cors());
@@ -100,9 +104,24 @@ app.get('/api/redirectUrl', async (req, res) => {
     // res.json(tokenResponse);
     // Redirect to app with token in query parameters
     const appRedirectUrl = `myapp://oauth-callback?token=${encodeURIComponent(
-      tokenResponse.accessToken
+      tokenResponse.data.accessToken
     )}`;
-    res.redirect(appRedirectUrl);
+    // res.redirect(appRedirectUrl);
+    // Send an HTML response that automatically redirects to the app
+    res.send(`
+      <html>
+        <head>
+          <title>Redirecting...</title>
+          <meta http-equiv="refresh" content="0;url=${appRedirectUrl}">
+        </head>
+        <body>
+          <p>Redirecting back to app...</p>
+          <script>
+            window.location.href = "${appRedirectUrl}";
+          </script>
+        </body>
+      </html>
+    `);
   } catch (error) {
     console.error('Error fetching token:', error); // Debug log
     res.status(500).json({ error: error.message });
@@ -203,7 +222,6 @@ app.get('/api/familyinfo', async (req, res) => {
 });
 
 
-
 // Get device power state
 app.get('/api/device/:deviceId/power', async (req, res) => {
   try {
@@ -214,10 +232,10 @@ app.get('/api/device/:deviceId/power', async (req, res) => {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    const connection = userConnections.get(token);
-    if (!connection) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
+    // const connection = userConnections.get(token);
+    // if (!connection) {
+    //   return res.status(401).json({ error: 'Invalid token' });
+    // }
 
     const powerState = await connection.getDevicePowerState(deviceId);
     res.json(powerState);
@@ -250,33 +268,53 @@ app.get('/api/device/:deviceId/usage', async (req, res) => {
   }
 });
 
+
 // Toggle device
-app.post('/api/device/:deviceId/toggle', async (req, res) => {
+app.post('/api/device/:deviceId/toggle/:state', async (req, res) => {
   try {
     console.log("/api/device/:deviceId/toggle")
-    const { deviceId } = req.params;
-    const { state } = req.body;
+    const { deviceId, state } = req.params;
     const token = req.headers.authorization?.split(' ')[1];
+
+    console.log("token", deviceId, state, token)
     
         if (!token) {
           return res.status(401).json({ error: 'Unauthorized' });
         }
 
         const options = {
-          method: 'GET',
-          url: `${regionLink['as']}/v2/device/thing`, // Adjust region dynamically if needed
+          method: 'POST',
+          url: `${regionLink['as']}/v2/device/thing/status`, // Adjust region dynamically if needed
           headers: {
             Authorization: `Bearer ${token}`,
             'X-CK-Nonce': "87df8r9e",
             'Content-Type': 'application/json',
           },
+          body:  JSON.stringify({
+            "type": 1,
+            "id": deviceId,
+            "params": {
+                "switch": state
+            }
+          })
         };
 
         request(options, (error, response, body) => {
-      if (error) {
-        console.error('Error fetching devices:', error);
-        return res.status(500).json({ error: 'Failed to fetch devices' });
-      }
+          // console.log(JSON.parse(response))
+          console.log(JSON.parse(body))
+          console.log(error)
+          if (error) {
+            console.error('Error fetching devices:', JSON.parse(body));
+            return res.status(500).json({ error: "Failed to fetch devices: " + error });
+          }
+
+          // Toggle device logic here
+          broadcastUpdate({ deviceId, state });
+          
+        //    res.status(200).send('Device toggled');
+
+          res.status(200).json(JSON.parse(body))
+
     });
 
     // if (!token) {
@@ -342,9 +380,55 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Test the server at: http://localhost:${PORT}`);
-  console.log(`API endpoint at: http://localhost:${PORT}/api`);
+
+// app.listen(PORT, () => {
+//   console.log(`Server running on port ${PORT}`);
+//   console.log(`Test the server at: http://localhost:${PORT}`);
+//   console.log(`API endpoint at: http://localhost:${PORT}/api`);
+// });
+
+
+const server = app.listen(PORT, () => {
+  console.log(`Server running on PORT ${PORT}`);
 });
+
+server.on('upgrade', (request, socket, head) => {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
+
+wss.on('connection', (ws, req) => {
+  console.log('WebSocket connected');
+  
+  // Handle messages from client
+  ws.on('message', (message) => {
+    console.log('Received:', message);
+  });
+
+  // Remove connection on close
+  ws.on('close', () => {
+    console.log('WebSocket disconnected');
+  });
+});
+
+// Function to broadcast updates
+// function broadcastUpdate(update) {
+//   wss.clients.forEach((client) => {
+//     if (client.readyState === WebSocket.OPEN) {
+//       client.send(JSON.stringify(update));
+//     }
+//   });
+// }
+
+function broadcastUpdate({ deviceId, state }) {
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({ deviceId, state }));
+    }
+  });
+}
+
+
+
+export default app;
